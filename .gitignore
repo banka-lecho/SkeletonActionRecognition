@@ -23,3 +23,7 @@ pose_estimation/yolo11m-pose_openvino_model
 pose_estimation/yolo11m-pose.pt
 segmentation/checkpoints
 yolo11m-pose.pt
+
+
+# рандомные файлы
+.DS_Store
