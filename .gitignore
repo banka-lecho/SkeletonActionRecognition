@@ -1,0 +1,25 @@
+# Игнорировать кэш Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Игнорировать виртуальные окружения
+venv/
+.env/
+.venv/
+
+# Игнорировать файлы IDE
+.idea/
+.vscode/
+
+# Игнорировать логи и временные файлы
+*.log
+*.tmp
+
+# Игнорировать библиотеки моделей и сами модели
+depth_estimation/Depth-Anything-V2
+pose_estimation/yolo
+pose_estimation/yolo11m-pose_openvino_model
+pose_estimation/yolo11m-pose.pt
+segmentation/checkpoints
+yolo11m-pose.pt
