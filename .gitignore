@@ -1,0 +1,12 @@
+segmentation/checkpoints
+segmentation/configs
+pose_estimation/pose_estimation
+depth_estimation/Depth-Anything-V2/
+pose_estimation/yolo
+pose_estimation/yolo11m-pose_openvino_model
+pose_estimation/yolo11m-pose.pt
+data
+dataset_creation/pose_estimation
+**/__pycache__/
+**/.DS_Store
+.idea
