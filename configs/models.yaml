@@ -16,16 +16,21 @@ pose_estimation:
 
 action_recognizer:
   threshold_distance: 50
+  use_depth: False
 
 dataset:
-  frames_path: "/Users/anastasiaspileva/Desktop/actions/frames"
-  videos_path: "/Users/anastasiaspileva/Desktop/actions/videos"
+  frames_path: 'dataset/frames'
+  videos_path: 'dataset/videos'
+  masks_path: 'dataset/action_dataset/masks'
+  flow_path: 'dataset/action_dataset/flow'
+  keypoints_path: 'dataset/action_dataset/keypoints'
 
-  train_labels_path: "/Users/anastasiaspileva/Desktop/actions/train.csv"
-  valid_labels_path: "/Users/anastasiaspileva/Desktop/actions/valid.csv"
 
-  action_dataset: "/Users/anastasiaspileva/Desktop/actions"
-  all_labels_path: "/Users/anastasiaspileva/Desktop/actions/labels.npy"
+  train_labels_path: "dataset/train.csv"
+  valid_labels_path: "dataset/valid.csv"
+
+  action_dataset: "dataset/"
+  all_labels_path: "dataset/labels.csv"
 
 
 settings:

@@ -1,3 +1,4 @@
+import os
 import cv2
 import yaml
 import functools
@@ -93,7 +94,7 @@ class DatasetCreator:
 
             # Normalize and save flow
             np.save(
-                output_dir / f"flow_{i:04d}.npy",
+                output_dir / f"frame_{i:04d}.npy",
                 flow / 20.0  # Empirical normalization
             )
             prev_frame = next_frame
@@ -102,7 +103,10 @@ class DatasetCreator:
     def get_keypoints(pose_result):
         # Get keypoints and boxes for persons
         keypoints = pose_result.keypoints.xy.cpu().numpy()[0]
-        conf = pose_result.keypoints.conf.cpu().numpy()[0].squeeze()
+        if pose_result.keypoints.conf is not None:
+            conf = pose_result.keypoints.conf.cpu().numpy()[0].squeeze()
+        else:
+            conf = 0
 
         # Process keypoints
         points = {}
@@ -170,12 +174,11 @@ class DatasetCreator:
 
         frame_paths = sorted(sequence_path.glob("*.jpg"))
         if not frame_paths:
-            print(f"No frames found in {sequence_path}")
             return
 
         self.compute_optical_flow(frame_paths, output_dirs['flow'])
 
-        for frame_path in tqdm(frame_paths, desc=f"Processing {sequence_path.name}"):
+        for frame_path in frame_paths:
             self.process_frame(frame_path, output_dirs, action_name)
 
         num_frames = len(frame_paths)
@@ -207,9 +210,9 @@ class DatasetCreator:
 
         for action_dir in tqdm(action_dirs, desc="Processing actions"):
             action_name = action_dir.name
-            sequence_dirs = [d for d in action_dir.iterdir() if d.is_dir()]
+            sequence_dirs = [d for d in action_dir.iterdir()]
 
-            for seq_dir in sequence_dirs:
+            for seq_dir in tqdm(sequence_dirs, desc=f"Processing action's video"):
                 self.process_video_sequence(seq_dir, action_name)
 
 
@@ -217,12 +220,18 @@ if __name__ == "__main__":
     with open("../configs/models.yaml", "r") as f:
         config = yaml.safe_load(f)
 
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    dataset_input_path = os.path.join(PROJECT_ROOT, config["dataset"]["frames_path"])
+    output_base_path = os.path.join(PROJECT_ROOT, config["dataset"]["action_dataset"])
+    model_path_yolo = os.path.join(PROJECT_ROOT, config["pose_estimation"]["model_path"])
+    device = os.path.join(PROJECT_ROOT, config["settings"]["device"])
+
     creator = DatasetCreator(
-        dataset_input_path=config["dataset"]["frames_path"],
-        output_base_path=config["dataset"]["action_dataset"],
+        dataset_input_path=dataset_input_path,
+        output_base_path=output_base_path,
         config_path_seg=config["segmentation"]["config_path"],
-        model_path_yolo=config["pose_estimation"]["model_path"],
-        device=config["settings"]["device"]
+        model_path_yolo=model_path_yolo,
+        device=device
     )
 
     creator.run()

@@ -5,18 +5,20 @@ from scipy.spatial.distance import euclidean
 
 
 class PoseMaskAnalyzer:
-    def __init__(self, threshold_distance: int = 10, base_threshold=0.15, size_factor=0.1):
+    def __init__(self, base_threshold=0.15, size_factor=0.1, use_depth=False):
         """Initialize the analyzer with depth and YOLO models.
 
         Args:
-            threshold_distance: threshold distance
+            base_threshold: threshold distance
+            size_factor: size factor
+            use_depth: whether to use depth or not
         """
-        self.threshold_distance = threshold_distance
         self.base_threshold = base_threshold
         self.size_factor = size_factor
+        self.use_depth = use_depth
 
     @staticmethod
-    def _get_object_size(mask):
+    def _get_object_size(mask: np.ndarray) -> int:
         """Calculates the characteristic size of an object based on the segmentation mask."""
         contours, _ = cv2.findContours(mask.astype(np.uint8),
                                        cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -26,26 +28,30 @@ class PoseMaskAnalyzer:
         rect = cv2.minAreaRect(largest_contour)
         return max(rect[1])
 
-    @staticmethod
-    def _get_object_centroid(mask: np.ndarray,
+    def _get_object_centroid(self, mask: np.ndarray,
                              depth_map: np.ndarray) -> np.ndarray:
         """Calculates the centroid coordinates of an object based on the segmentation mask."""
         y_coords, x_coords = np.where(mask > 0)
-        z_values = depth_map[y_coords, x_coords].astype(np.float32)
-        x_3d = x_coords * z_values  # условные единицы
-        y_3d = y_coords * z_values  # условные единицы
-        z_3d = z_values
-        x_3d, y_3d, z_3d = np.mean(x_3d), np.mean(y_3d), np.mean(z_3d)
-        return [x_3d, y_3d, z_3d]
+        if self.use_depth:
+            z_values = depth_map[y_coords, x_coords].astype(np.float32)
+            x_3d = x_coords * z_values  # условные единицы
+            y_3d = y_coords * z_values  # условные единицы
+            z_3d = z_values
+            x_3d, y_3d, z_3d = np.mean(x_3d), np.mean(y_3d), np.mean(z_3d)
+            coords = [x_3d, y_3d, z_3d]
+        else:
+            x, y = np.mean(x_coords), np.mean(y_coords)
+            coords = [x, y]
+        return coords
 
     def check_hands_in_mask(self,
-                            points_3d: Dict[int, Dict[int, Tuple[float, float]]],
+                            person_points: Dict[int, Dict[int, Tuple[float, float]]],
                             object_centroid: np.ndarray,
                             object_size: int) -> bool:
         """Check if hand points are in or near the mask for each person.
 
         Args:
-            points_3d: Dictionary of person IDs to their keypoints
+            person_points: Dictionary of person IDs to their keypoints
             object_centroid: centroid of the object
             object_size: size of the object
 
@@ -60,7 +66,7 @@ class PoseMaskAnalyzer:
         """
         results = {}
         is_interacting_left, is_interacting_right = False, False
-        for person_id, skeleton_points in points_3d.items():
+        for person_id, skeleton_points in person_points.items():
             point_9 = skeleton_points.get(9)
             point_10 = skeleton_points.get(10)
 
@@ -85,23 +91,17 @@ class PoseMaskAnalyzer:
 
         return is_interacting_left or is_interacting_right
 
-    @staticmethod
-    def get_person_3d_points(image: np.ndarray,
-                             keypoints: np.ndarray,
-                             depth_map: np.ndarray) -> Dict[int, Dict[int, Tuple[float, float]]]:
+    def get_person_points_dict(self, keypoints: np.ndarray,
+                               depth_map=None) -> Dict[int, Dict[int, Tuple[float, float]]]:
         """Process an image to detect persons and extract their 3D keypoints.
 
         Args:
-            image: Input image
             keypoints: 3D keypoints
             depth_map: depth map
 
         Returns:
             Dictionary mapping person IDs to their keypoints
         """
-        if image is None:
-            raise FileNotFoundError(f"Could not load image")
-
         points_3d = {}
         for person_id, result in enumerate(keypoints, start=1):
             person_indices = [i for i, cls in enumerate(result.boxes.cls.cpu().numpy())
@@ -115,11 +115,14 @@ class PoseMaskAnalyzer:
                 points = {}
 
                 for point_id, (x, y) in enumerate(person_keypoints, start=1):
-                    height, width = depth_map.shape
-                    assert 0 <= x < width and 0 <= y < height, "Координаты за пределами изображения!"
-                    z = depth_map[int(y), int(x)].astype(float)
-                    x_3d, y_3d, z_3d = x * z, y * z, z
-                    points[point_id] = [float(x_3d), float(y_3d), z_3d]
+                    if self.use_depth:
+                        height, width = depth_map.shape
+                        assert 0 <= x < width and 0 <= y < height, "Coordinates outside the image!"
+                        z = depth_map[int(y), int(x)].astype(float)
+                        x_3d, y_3d, z_3d = x * z, y * z, z
+                        points[point_id] = [float(x_3d), float(y_3d), z_3d]
+                    else:
+                        points[point_id] = [x, y]
 
                 points_3d[person_id] = points
 
@@ -141,9 +144,12 @@ class PoseMaskAnalyzer:
         Returns:
             Dictionary with hand-in-mask results for each person
         """
-        persons_points_3d = self.get_person_3d_points(image, keypoints, depth_map)
+        if image is None:
+            raise FileNotFoundError(f"Could not load image")
+
+        persons_coords = self.get_person_points_dict(keypoints=keypoints, depth_map=depth_map)
         object_size = self._get_object_size(mask)
         object_centroid = self._get_object_centroid(mask, depth_map)
         if object_centroid is None or object_size is None:
             return False
-        return self.check_hands_in_mask(persons_points_3d, object_centroid, object_size)
+        return self.check_hands_in_mask(persons_coords, object_centroid, object_size)

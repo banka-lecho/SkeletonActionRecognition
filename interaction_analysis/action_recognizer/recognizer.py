@@ -89,24 +89,21 @@ class SuperFormer(nn.Module):
             nn.Softmax(dim=1))
 
         # Final classifier
-        self.fc = nn.Linear(256 * 2 + 256, num_classes)
+        self.fc = nn.Linear(256, num_classes)
 
-    def forward(self,
-                mask: Tensor,
-                optical_flow: Tensor,
-                skeleton_points: Tensor,
-                edge_index: Tensor) -> Tensor:
+    def forward(self, mask: Tensor, optical_flow: Tensor,
+                skeleton_points: Tensor, edge_index: Tensor) -> Tensor:
         """Forward pass of the SuperFormer model.
 
-        Args:
-            mask (Tensor): Object mask tensor [batch_size, 1, H, W]
-            optical_flow (Tensor): Optical flow tensor [batch_size, 2, H, W]
-            skeleton_points (Tensor): Skeletal points coordinates [num_nodes, 3] (x,y,confidence)
-            edge_index (Tensor): Skeleton graph edges [2, num_edges]
+                Args:
+                    mask (Tensor): Object mask tensor [batch_size, 1, H, W]
+                    optical_flow (Tensor): Optical flow tensor [batch_size, 2, H, W]
+                    skeleton_points (Tensor): Skeletal points coordinates [num_nodes, 3] (x,y,confidence)
+                    edge_index (Tensor): Skeleton graph edges [2, num_edges]
 
-        Returns:
-            Tensor: Classification logits [batch_size, num_classes]
-        """
+                Returns:
+                    Tensor: Classification logits [batch_size, num_classes]
+                """
         # Process mask stream
         mask_features = self.mask_stream(mask).flatten(1)  # [B, 256]
 
@@ -114,8 +111,17 @@ class SuperFormer(nn.Module):
         flow_features = self.temporal_stream(optical_flow).flatten(1)  # [B, 256]
 
         # Process skeleton points
-        skeleton_features = self.gcn(skeleton_points, edge_index)  # [N, 256]
-        skeleton_features = torch.max(skeleton_features, dim=0)[0].unsqueeze(0)  # Global max pooling [1, 256]
+        B, N, C = skeleton_points.shape
+        # Обрабатываем каждый скелетон в батче
+        skeleton_features = []
+        for i in range(B):
+            # [N, C] -> [N, 256] через GCN
+            feat = self.gcn(skeleton_points[i], edge_index)
+            # Global max pooling для каждого скелетона
+            feat = torch.max(feat, dim=0)[0]  # [256]
+            skeleton_features.append(feat)
+
+        skeleton_features = torch.stack(skeleton_features)  # [B, 256]
 
         # Attention-weighted feature fusion
         combined = torch.cat([mask_features, flow_features, skeleton_features], dim=1)
@@ -123,5 +129,4 @@ class SuperFormer(nn.Module):
         combined = (weights[:, 0:1] * mask_features +
                     weights[:, 1:2] * flow_features +
                     weights[:, 2:3] * skeleton_features)
-
         return self.fc(combined)

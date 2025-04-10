@@ -5,8 +5,16 @@ depth_estimation/Depth-Anything-V2/
 pose_estimation/yolo
 pose_estimation/yolo11m-pose_openvino_model
 pose_estimation/yolo11m-pose.pt
+dataset_creation/get_video_label.py
 data
 dataset_creation/pose_estimation
 **/__pycache__/
 **/.DS_Store
 .idea
+xyita.py
+dataset/action_dataset
+dataset/frames
+dataset/videos
+interaction_analysis/action_recognizer/runs/
+dataset_creation/remove_dir.py
+dataset_creation/video_frame_extractor.py
