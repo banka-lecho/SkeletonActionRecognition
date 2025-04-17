@@ -31,7 +31,7 @@ def get_dataloaders(labels_path, batch_size=32, target_size=(128, 128), frame_st
         frame_step=frame_step
     )
 
-    # Для скелетонных данных нужен специальный коллайт
+    # Для скелетных данных нужен специальный коллайт
     def collate_fn(batch):
         masks = torch.stack([item[0]['mask'] for item in batch])
         flows = torch.stack([item[0]['optical_flow'] for item in batch])
@@ -67,6 +67,23 @@ def get_dataloaders(labels_path, batch_size=32, target_size=(128, 128), frame_st
     return train_loader, val_loader, train_dataset.get_action_names()
 
 
+def visualize_predictions(model, dataloader, num_samples=5):
+    """Визуализация предсказаний"""
+    model.eval()
+    images, labels = next(iter(dataloader))
+    with torch.no_grad():
+        outputs = model(images)
+        preds = torch.argmax(outputs, 1)
+
+    plt.figure(figsize=(10, 5))
+    for i in range(num_samples):
+        plt.subplot(1, num_samples, i + 1)
+        plt.imshow(images[i].permute(1, 2, 0))  # для изображений
+        plt.title(f'Pred: {preds[i]}, True: {labels[i]}')
+        plt.axis('off')
+    plt.savefig('predictions.png')
+
+
 # 2. Функции обучения и валидации
 def train_epoch(model, train_loader, criterion, optimizer, device, epoch, writer):
     model.train()
@@ -98,6 +115,14 @@ def train_epoch(model, train_loader, criterion, optimizer, device, epoch, writer
         _, predicted = outputs.max(1)
         total += targets.size(0)
         correct += predicted.eq(targets).sum().item()
+
+        # Логирование весов и градиентов
+        for name, param in model.named_parameters():
+            writer.add_histogram(f'Weights/{name}', param, epoch)
+            if param.grad is not None:
+                writer.add_histogram(f'Gradients/{name}', param.grad, epoch)
+
+        writer.close()
 
         # Логируем каждые N батчей
         if batch_idx % 50 == 0:
@@ -206,6 +231,13 @@ def train_model(config):
 
     # Модель
     model = SuperFormer(num_classes=len(class_names)).to(device)
+
+    # Подсчет параметров
+    def count_parameters(model):
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    total_params = count_parameters(model)
+    print(f"Total trainable parameters: {total_params:,}")
 
     # Критерий и оптимизатор
     criterion = nn.CrossEntropyLoss()

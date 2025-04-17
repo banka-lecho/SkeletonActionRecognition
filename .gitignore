@@ -18,3 +18,4 @@ dataset/videos
 interaction_analysis/action_recognizer/runs/
 dataset_creation/remove_dir.py
 dataset_creation/video_frame_extractor.py
+interaction_analysis/action_recognizer/saved_models/
