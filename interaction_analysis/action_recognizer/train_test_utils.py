@@ -7,7 +7,7 @@ import torch.optim as optim
 from datetime import datetime
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, precision_score, recall_score
 from torch.utils.tensorboard import SummaryWriter
 
 from interaction_analysis.action_recognizer.recognizer import SuperFormer
@@ -90,6 +90,7 @@ def train_epoch(model, train_loader, criterion, optimizer, device, epoch, writer
     running_loss = 0.0
     correct = 0
     total = 0
+    all_targets, all_predicted = [], []
 
     for batch_idx, (data, targets) in enumerate(train_loader):
         # Перемещаем данные на устройство
@@ -115,6 +116,8 @@ def train_epoch(model, train_loader, criterion, optimizer, device, epoch, writer
         _, predicted = outputs.max(1)
         total += targets.size(0)
         correct += predicted.eq(targets).sum().item()
+        all_targets.extend(targets.cpu().numpy())
+        all_predicted.extend(predicted.cpu().numpy())
 
         # Логирование весов и градиентов
         for name, param in model.named_parameters():
@@ -132,11 +135,15 @@ def train_epoch(model, train_loader, criterion, optimizer, device, epoch, writer
     # Считаем средние метрики за эпоху
     train_loss = running_loss / len(train_loader)
     train_acc = 100. * correct / total
+    train_prec = precision_score(y_true=all_targets, y_pred=all_predicted, average='macro')
+    train_rec = recall_score(y_true=all_targets, y_pred=all_predicted, average='macro')
 
     # Логируем в TensorBoard
     if writer:
         writer.add_scalar('Loss/train', train_loss, epoch)
         writer.add_scalar('Accuracy/train', train_acc, epoch)
+        writer.add_scalar('Precision/train', train_prec, epoch)
+        writer.add_scalar('Recall/train', train_rec, epoch)
 
     return train_loss, train_acc
 
@@ -170,11 +177,15 @@ def validate(model, val_loader, criterion, device, epoch, writer, class_names):
 
     val_loss = running_loss / len(val_loader)
     val_acc = 100. * correct / total
+    val_prec = precision_score(y_true=all_targets, y_pred=all_predicted, average='macro')
+    val_rec = recall_score(y_true=all_targets, y_pred=all_predicted, average='macro')
 
     # Логируем в TensorBoard
     if writer:
         writer.add_scalar('Loss/val', val_loss, epoch)
         writer.add_scalar('Accuracy/val', val_acc, epoch)
+        writer.add_scalar('Precision/val', val_prec, epoch)
+        writer.add_scalar('Recall/val', val_rec, epoch)
 
         # Confusion matrix
         cm = confusion_matrix(all_targets, all_predicted)
@@ -289,11 +300,11 @@ def train_model(config):
 if __name__ == "__main__":
     config = {
         'labels_path': 'dataset/action_dataset/labels.csv',
-        'batch_size': 32,
+        'batch_size': 16,
         'target_size': (128, 128),
         'frame_step': 1,
         'epochs': 50,
-        'lr': 1e-3,
+        'lr': 1e-2,
         'weight_decay': 1e-4,
         'log_dir': 'runs',
         'save_dir': 'saved_models'

@@ -14,10 +14,12 @@ class GCN(nn.Module):
         output_dim (int): Dimension of output features. Default: 32.
     """
 
-    def __init__(self, input_dim: int = 3, hidden_dim: int = 64, output_dim: int = 32) -> None:
+    def __init__(self, input_dim=3, hidden_dim=64, output_dim=32):
         super().__init__()
         self.conv1 = GCNConv(input_dim, hidden_dim)
+        self.bn1 = nn.BatchNorm1d(hidden_dim)  # <-- Добавлено
         self.conv2 = GCNConv(hidden_dim, output_dim)
+        self.bn2 = nn.BatchNorm1d(output_dim)  # <-- Добавлено
 
     def forward(self, x: Tensor, edge_index: Tensor) -> Tensor:
         """Forward pass of the GCN.
@@ -30,17 +32,15 @@ class GCN(nn.Module):
             Tensor: Output node features [num_nodes, output_dim]
         """
         x = self.conv1(x, edge_index)
+        x = self.bn1(x)
         x = F.relu(x)
         x = self.conv2(x, edge_index)
+        x = self.bn2(x)
         return x
 
 
 class SuperFormer(nn.Module):
-    """Multimodal action recognition model combining mask, optical flow and skeleton data.
-
-    Args:
-        num_classes (int): Number of output action classes
-    """
+    """Multimodal action recognition model combining mask, optical flow and skeleton data."""
 
     def __init__(self, num_classes: int) -> None:
         super().__init__()
@@ -81,15 +81,28 @@ class SuperFormer(nn.Module):
         # Skeletal points processing
         self.gcn = GCN(input_dim=3, hidden_dim=64, output_dim=256)
 
-        # Feature fusion attention
-        self.attention = nn.Sequential(
-            nn.Linear(256 * 2 + 256, 128),
-            nn.ReLU(),
-            nn.Linear(128, 3),
-            nn.Softmax(dim=1))
-
-        # Final classifier
         self.fc = nn.Linear(256, num_classes)
+
+        # Initialize weights
+        self._init_weights()
+
+    def _init_weights(self):
+        """Initialize weights with He initialization and zeros for biases."""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, GCNConv):  # Для слоев GCN из torch_geometric
+                nn.init.kaiming_normal_(m.lin.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
 
     def forward(self, mask: Tensor, optical_flow: Tensor,
                 skeleton_points: Tensor, edge_index: Tensor) -> Tensor:
@@ -125,8 +138,7 @@ class SuperFormer(nn.Module):
 
         # Attention-weighted feature fusion
         combined = torch.cat([mask_features, flow_features, skeleton_features], dim=1)
-        weights = self.attention(combined)
-        combined = (weights[:, 0:1] * mask_features +
-                    weights[:, 1:2] * flow_features +
-                    weights[:, 2:3] * skeleton_features)
-        return self.fc(combined)
+        result = (combined[:, 0:1] * mask_features +
+                  combined[:, 1:2] * flow_features +
+                  combined[:, 2:3] * skeleton_features)
+        return self.fc(result)
