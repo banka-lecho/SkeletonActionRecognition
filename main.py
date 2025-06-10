@@ -25,9 +25,9 @@ OUTPUT_PATH = config["settings"]["frames_output_dir"]
 
 CONFIG_SEG = config["segmentation"]["config_path"]
 CONFIG_DEPTH = config["depth_estimation"]["config_path"]
-MODEL_PATH_YOLO = config["pose_estimation"]["model_path"]
+MODEL_PATH_YOLO = config["models"]["model_path"]
 MODEL_PATH_DEPTH = config["depth_estimation"]["model_path"]
-CALL_OPENVINO_MODEL = config["pose_estimation"]["call_openvino"]
+CALL_OPENVINO_MODEL = config["models"]["call_openvino"]
 
 DEVICE = config["settings"]["device"]
 USE_DEPTH = config["action_recognizer"]["use_depth"]

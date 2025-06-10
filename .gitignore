@@ -1,21 +1,24 @@
-segmentation/checkpoints
-segmentation/configs
-pose_estimation/pose_estimation
-depth_estimation/Depth-Anything-V2/
-pose_estimation/yolo
-pose_estimation/yolo11m-pose_openvino_model
-pose_estimation/yolo11m-pose.pt
-dataset_creation/get_video_label.py
-data
-dataset_creation/pose_estimation
 **/__pycache__/
 **/.DS_Store
 .idea
-xyita.py
-dataset/action_dataset
+*.log
+
+# dataset
+dataset
+
+# models configs and weights
+segmentation/checkpoints/sam2.1_hiera_s.pt
+segmentation/configs/sam2.1_hiera_s.yaml
+pose_estimation/models/yolo11m-pose.pt
+
+# models dirs
+depth_estimation/Depth-Anything-V2/
+pose_estimation/models/yolo-pose_onnx_model
+pose_estimation/models/yolo-pose_openvino_model
+interaction_analysis/action_recognizer/runs/
+interaction_analysis/action_recognizer/saved_models/
+
+# dataset
 dataset/frames
 dataset/videos
-interaction_analysis/action_recognizer/runs/
-dataset_creation/remove_dir.py
-dataset_creation/video_frame_extractor.py
-interaction_analysis/action_recognizer/saved_models/
+dataset/action_dataset

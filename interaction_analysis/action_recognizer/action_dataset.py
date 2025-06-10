@@ -5,32 +5,28 @@ import pandas as pd
 from pathlib import Path
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
-from typing import Tuple, Dict, List, Optional
-from torchvision.transforms.functional import resize
+from typing import Tuple, Dict, List
 
 
-class ActionDataset(Dataset):
-    """Dataset for multimodal action recognition with masks, optical flow and keypoints.
+class SkeletonDataset(Dataset):
+    """Dataset for multimodal action recognition with keypoints sequences.
 
     Args:
+        labels_path (str): Path to CSV file with dataset labels and paths.
         split (str): 'train' or 'val' to select data split.
-        transform (callable, optional): Optional transform to be applied on samples.
-        target_size (Tuple[int, int], optional): Target size for resizing masks and flow.
-            If None, keeps original size. Default: (128, 128).
         frame_step (int): Step between frames when loading sequences. Default: 1.
+        sequence_length (int): Number of frames in each sequence. Default: 30.
     """
 
     def __init__(self,
                  labels_path: str,
                  split: str = 'train',
-                 transform: Optional[callable] = None,
-                 target_size: Tuple[int, int] = (128, 128),
-                 frame_step: int = 1):
-        self.root_dir = Path(__file__).resolve().parent.parent.parent
+                 frame_step: int = 1,
+                 sequence_length: int = 30):
+        self.root_dir = Path(labels_path).resolve().parent.parent.parent
         self.split = split
-        self.transform = transform
-        self.target_size = target_size
         self.frame_step = frame_step
+        self.sequence_length = sequence_length
 
         # Load labels
         self.labels_df = pd.read_csv(os.path.join(self.root_dir, labels_path))
@@ -51,25 +47,28 @@ class ActionDataset(Dataset):
             action = row['class']
             target = row['target']
             video_path = row['video_path']
-            masks_path = row['masks_path']
-            flow_path = row['flow_path']
             keypoints_path = row['keypoints_path']
 
             # Get all available frames
-            mask_dir = os.path.join(self.root_dir, masks_path)
-            frame_files = sorted([f for f in os.listdir(mask_dir) if f.endswith('.npy')])
+            keys_dir = os.path.join(self.root_dir, keypoints_path)
+            frame_files = sorted([f for f in os.listdir(keys_dir) if f.endswith('.npz')])
 
-            # Create samples with frame_step
-            for i in range(0, len(frame_files), self.frame_step):
-                frame_id = frame_files[i][:-4]  # remove '.npy'
+            # Create sequences with frame_step
+            for i in range(0, len(frame_files) - self.sequence_length * self.frame_step + 1, self.frame_step):
+                sequence = []
+                for j in range(self.sequence_length):
+                    frame_idx = i + j * self.frame_step
+                    frame_id = frame_files[frame_idx][:-4]
+                    sequence.append({
+                        'frame_id': frame_id,
+                        'keypoints_path': os.path.join(keypoints_path, frame_id + '.npz')
+                    })
+
                 sample = {
                     'action': action,
                     'video': video_path,
                     'target': target,
-                    'frame_id': frame_id,
-                    'mask_path': os.path.join(masks_path, frame_id + '.npy'),
-                    'flow_path': os.path.join(flow_path, frame_id + '.npy'),
-                    'keypoints_path': os.path.join(keypoints_path, frame_id + '.npz')
+                    'sequence': sequence
                 }
                 samples.append(sample)
 
@@ -78,55 +77,34 @@ class ActionDataset(Dataset):
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, idx: int) -> Tuple[Dict[str, torch.Tensor], int]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
+        """Get sample by index.
+        Возвращает Batch data размером [B, T, V, C]
+            B — batch size
+            T — последовательность кадров
+            V — количество вершин
+            С — количество признаков для одной точки
+        """
         sample = self.samples[idx]
+        sequence_data = []
 
-        # Load mask
-        mask_path = os.path.join(self.root_dir, sample['mask_path'])
-        mask = torch.from_numpy(np.load(mask_path)).float().unsqueeze(0)  # [1, H, W]
+        # Load all frames in the sequence
+        for frame in sample['sequence']:
+            kp_path = os.path.join(self.root_dir, frame['keypoints_path'])
+            kp_data = np.load(kp_path, allow_pickle=True)
+            points_dict = kp_data['points'].item()
 
-        # Load optical flow
-        flow_path = os.path.join(self.root_dir, sample['flow_path'])
-        flow = torch.from_numpy(np.load(flow_path)).float()  # [2, H, W]
-        # Проверка размерности
-        if flow.dim() == 3 and flow.shape[2] == 2:
-            flow = flow.permute(2, 0, 1)  # [2, H, W]
+            # Extract x, y coordinates and confidence (assuming format is [x, y, conf])
+            points = np.zeros((17, 3), dtype=np.float32)
+            for i in range(17):
+                points[i] = points_dict[i]
 
-        assert flow.shape[0] == 2, f"Flow must have shape [2, H, W], got {flow.shape}"
+            sequence_data.append(points)
 
-        # Load keypoints
-        kp_path = os.path.join(self.root_dir, sample['keypoints_path'])
-        kp_data = np.load(kp_path, allow_pickle=True)
-        points_dict = kp_data['points'].item()
-        points = np.zeros((17, 3), dtype=np.float32)
-
-        for i in range(17):
-            points[i] = points_dict[i]
-
-        points = torch.from_numpy(points).float()
-        edges = torch.from_numpy(kp_data['edges']).long()
-
-        # Resize mask and flow to target size if needed
-        if self.target_size is not None:
-            mask = resize(mask, self.target_size)
-            flow = resize(flow, self.target_size)
-
-        # Apply transforms if any
-        if self.transform:
-            mask = self.transform(mask)
-            flow = self.transform(flow)
-
-        # Prepare output
-        data = {
-            'mask': mask,
-            'optical_flow': flow,
-            'skeleton_points': points,
-            'edge_index': edges
-        }
-
+        sequence_tensor = torch.from_numpy(np.array(sequence_data)).float().permute(2, 0, 1)
         label = self.action_to_idx[sample['target']]
 
-        return data, label
+        return sequence_tensor, label
 
     def get_num_classes(self) -> int:
         return len(self.action_to_idx)
@@ -134,14 +112,44 @@ class ActionDataset(Dataset):
     def get_action_names(self) -> List[str]:
         return list(self.action_to_idx.keys())
 
+    @staticmethod
+    def get_adj_matrix():
+        num_nodes = 17  # COCO Keypoints
+        adj_matrix = torch.zeros(num_nodes, num_nodes)
+
+        edges = [
+            (0, 1), (0, 2), (1, 3), (2, 4),
+            (0, 5), (0, 6), (5, 7), (7, 9),
+            (6, 8), (8, 10), (5, 6), (5, 11),
+            (6, 12), (11, 13), (13, 15), (12, 14),
+            (14, 16), (11, 12)
+        ]
+
+        for i, j in edges:
+            adj_matrix[i, j] = 1
+            adj_matrix[j, i] = 1
+
+        # Добавляем self-connections (полезно для GCN)
+        adj_matrix += torch.eye(num_nodes)
+
+        # Нормализация (например, симметричная нормализация D^{-1/2} A D^{-1/2})
+        # TODO:: вот тут подумать, а нужна ли нам эта нормализация
+        degree = adj_matrix.sum(dim=1)
+        degree_sqrt_inv = torch.diag(1.0 / torch.sqrt(degree))
+        adj_matrix_normalized = degree_sqrt_inv @ adj_matrix @ degree_sqrt_inv
+        adj_matrix_normalized = adj_matrix_normalized.unsqueeze(0)
+        return adj_matrix_normalized
+
 
 if __name__ == '__main__':
-    dataset = ActionDataset(
-        labels_path='dataset/action_dataset/labels.csv',
+
+    dataset = SkeletonDataset(
+        labels_path='/labels.csv',
         split='train',
-        target_size=(128, 128),
-        frame_step=2
+        frame_step=2,
+        sequence_length=30
     )
+    adj_matrix = dataset.get_adj_matrix()
 
     dataloader = DataLoader(
         dataset,
@@ -151,7 +159,4 @@ if __name__ == '__main__':
     )
 
     for batch_data, batch_labels in dataloader:
-        print(f"mask batch shape: {batch_data['mask'].shape}")
-        print(f"optical flow batch shape: {batch_data['optical_flow'].shape}")
-        print(f"skeleton points batch shape: {batch_data['skeleton_points'].shape}")
-        break
+        print(f"Input shape: {batch_data.shape}")

@@ -2,6 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
+# TODO:: написать документацию для функций
+
 def show_mask(mask, ax, random_color=False, borders=True):
     if random_color:
         color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
@@ -46,5 +48,36 @@ def show_masks(image, masks, scores, point_coords=None, box_coords=None, input_l
             show_box(box_coords, plt.gca())
         if len(scores) > 1:
             plt.title(f"Mask {i + 1}, Score: {score:.3f}", fontsize=18)
-        # plt.axis('on')
         plt.imshow(image)
+
+
+def visualize_results(image: np.ndarray,
+                      masks: np.ndarray,
+                      alpha: float = 0.5) -> None:
+    """Visualizes the results of segmentation.
+
+        :param image: Source image
+        :param masks: Segmentation masks
+        :param alpha: Overlay transparency
+    """
+
+    plt.figure(figsize=(15, 5))
+
+    plt.subplot(1, 3, 1)
+    plt.imshow(image)
+    plt.title("Original Image")
+    plt.axis('off')
+
+    plt.subplot(1, 3, 2)
+    plt.imshow(masks[0], cmap='gray')
+    plt.title("Segmentation Mask")
+    plt.axis('off')
+
+    plt.subplot(1, 3, 3)
+    plt.imshow(image)
+    plt.imshow(masks[0], alpha=alpha, cmap='jet')
+    plt.title("Overlay")
+    plt.axis('off')
+
+    plt.tight_layout()
+    plt.show()

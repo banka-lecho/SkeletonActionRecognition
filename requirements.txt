@@ -315,3 +315,5 @@ yarl==1.18.3
 youtube-dl==2021.12.17
 yt-dlp==2025.1.15
 zipp==3.21.0
+
+transformers~=4.50.0.dev0

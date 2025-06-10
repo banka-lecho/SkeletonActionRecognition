@@ -3,13 +3,13 @@ segmentation:
   call_openvino: False
 
 depth_estimation:
-  model_path: "depth_estimation/Depth-Anything-V2/checkpoints/depth_anything_v2_vits.pth"
+  model_path: "depth_estimation/Depth_Anything_V2/checkpoints/depth_anything_v2_vits.pth"
   config_path: "vits"
   optimize_for: "speed"
   call_openvino: False
 
 pose_estimation:
-  model_path: "pose_estimation/yolo/yolo11m-pose.pt"
+  model_path: "models/yolo/yolo11m-pose.pt"
   threshold: 0.7
   use_gpu: true
   call_openvino: False
@@ -19,18 +19,13 @@ action_recognizer:
   use_depth: False
 
 dataset:
+  action_dataset: "dataset/"
   frames_path: 'dataset/frames'
   videos_path: 'dataset/videos'
   masks_path: 'dataset/action_dataset/masks'
-  flow_path: 'dataset/action_dataset/flow'
   keypoints_path: 'dataset/action_dataset/keypoints'
 
-
-  train_labels_path: "dataset/train.csv"
-  valid_labels_path: "dataset/valid.csv"
-
-  action_dataset: "dataset/"
-  all_labels_path: "dataset/labels.csv"
+  labels_path: "dataset/action_dataset/labels.csv"
 
 
 settings:

@@ -1,319 +1,186 @@
-import os
-import time
 import torch
+import time
 import numpy as np
 import torch.nn as nn
-import torch.optim as optim
-from datetime import datetime
-import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
-from sklearn.metrics import confusion_matrix, precision_score, recall_score
 from torch.utils.tensorboard import SummaryWriter
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from sklearn.metrics import precision_score, recall_score
+from interaction_analysis.action_recognizer.action_former import ST_GCN_Net
+from interaction_analysis.action_recognizer.action_dataset import SkeletonDataset
 
-from interaction_analysis.action_recognizer.recognizer import SuperFormer
-from interaction_analysis.action_recognizer.action_dataset import ActionDataset
+
+def compute_metrics(outputs, labels):
+    """Вычисляет precision и recall"""
+    _, predicted = torch.max(outputs, 1)
+    predicted = predicted.cpu().numpy()
+    labels = labels.cpu().numpy()
+
+    precision = precision_score(labels, predicted, average='macro', zero_division=0)
+    recall = recall_score(labels, predicted, average='macro', zero_division=0)
+    return precision, recall
 
 
-# 1. Инициализация датасетов и даталоадеров
-def get_dataloaders(labels_path, batch_size=32, target_size=(128, 128), frame_step=1):
-    """Создает даталоадеры для обучения и валидации"""
-    train_dataset = ActionDataset(
-        labels_path=labels_path,
+def log_gradients(model, writer, step):
+    """Логирует гистограммы градиентов"""
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            writer.add_histogram(f'gradients/{name}', param.grad, step)
+
+
+def log_weights(model, writer, step):
+    """Логирует гистограммы весов"""
+    for name, param in model.named_parameters():
+        writer.add_histogram(f'weights/{name}', param, step)
+
+
+def train_epoch(model, dataloader, optimizer, writer, epoch, criterion, device):
+    total_loss = 0
+    all_labels = []
+    all_outputs = []
+
+    loss = 0
+    for batch_idx, (points, labels) in enumerate(dataloader):
+        # Forward
+        outputs = model(points)
+        loss = criterion(outputs, labels)
+
+        # Backward
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        # Собираем данные для метрик
+        all_labels.extend(labels.to(device).numpy())
+        all_outputs.extend(outputs.detach().to(device).numpy())
+
+        # Логируем градиенты и веса для каждого батча
+        if epoch % 5 == 0:
+            log_gradients(model, writer, epoch * len(dataloader) + batch_idx)
+            log_weights(model, writer, epoch * len(dataloader) + batch_idx)
+            writer.add_scalar('train/batch_loss', loss.item(), epoch * len(dataloader) + batch_idx)
+
+    # Вычисляем метрики для эпохи
+    all_outputs = torch.tensor(np.array(all_outputs))
+    all_labels = torch.tensor(np.array(all_labels))
+    precision, recall = compute_metrics(all_outputs, all_labels)
+    avg_loss = total_loss / len(dataloader)
+
+    # Логируем метрики для эпохи
+    writer.add_scalar('train/loss', avg_loss, epoch)
+    writer.add_scalar('train/precision', precision, epoch)
+    writer.add_scalar('train/recall', recall, epoch)
+
+    print(f"Epoch {epoch}, Loss: {loss.item()}")
+    return avg_loss, precision
+
+
+def validate(model, loader, device, writer, epoch):
+    model.eval()
+    total_loss = 0
+    correct = 0
+    all_labels = []
+    all_outputs = []
+
+    with torch.no_grad():
+        for masks, labels in loader:
+            masks = masks.to(device)
+            labels = labels.to(device)
+
+            outputs = model(masks)
+            loss = criterion(outputs, labels)
+
+            total_loss += loss.item()
+            _, predicted = torch.max(outputs.data, 1)
+            correct += (predicted == labels).sum().item()
+
+            all_labels.extend(labels.cpu().numpy())
+            all_outputs.extend(outputs.cpu().numpy())
+
+    # Вычисляем метрики
+    all_outputs = torch.tensor(np.array(all_outputs))
+    all_labels = torch.tensor(np.array(all_labels))
+    precision, recall = compute_metrics(all_outputs, all_labels)
+    avg_loss = total_loss / len(loader)
+
+    # Логируем метрики валидации
+    writer.add_scalar('val/loss', avg_loss, epoch)
+    writer.add_scalar('val/precision', precision, epoch)
+    writer.add_scalar('val/recall', recall, epoch)
+
+    return avg_loss, precision
+
+
+if __name__ == '__main__':
+    # def augment_keypoints(keypoints):
+    #     # Добавление шума
+    #     noise = torch.randn_like(keypoints) * 0.01
+    #     keypoints += noise
+    #
+    #     # Случайный сдвиг
+    #     shift = torch.rand(2) * 0.1 - 0.05
+    #     keypoints += shift
+    #
+    #     return keypoints
+
+    train_dataset = SkeletonDataset(
+        labels_path='/labels.csv',
         split='train',
-        target_size=target_size,
-        frame_step=frame_step
+        frame_step=2,
+        sequence_length=30
     )
 
-    val_dataset = ActionDataset(
-        labels_path=labels_path,
-        split='val',
-        target_size=target_size,
-        frame_step=frame_step
+    val_dataset = SkeletonDataset(
+        labels_path='/labels.csv',
+        split='test',
+        frame_step=2,
+        sequence_length=30
     )
 
-    # Для скелетных данных нужен специальный коллайт
-    def collate_fn(batch):
-        masks = torch.stack([item[0]['mask'] for item in batch])
-        flows = torch.stack([item[0]['optical_flow'] for item in batch])
-        points = torch.stack([item[0]['skeleton_points'] for item in batch])
-        edges = batch[0][0]['edge_index']  # предполагаем одинаковую структуру скелета
-        labels = torch.tensor([item[1] for item in batch])
-
-        return {
-            'mask': masks,
-            'optical_flow': flows,
-            'skeleton_points': points,
-            'edge_index': edges
-        }, labels
+    adj_matrix = SkeletonDataset.get_adj_matrix()
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=batch_size,
+        batch_size=32,
         shuffle=True,
-        num_workers=0,
-        collate_fn=collate_fn,
-        pin_memory=True
+        num_workers=4
     )
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=0,
-        collate_fn=collate_fn,
-        pin_memory=True
+        batch_size=32,
+        shuffle=True,
+        num_workers=4
     )
 
-    return train_loader, val_loader, train_dataset.get_action_names()
-
-
-def visualize_predictions(model, dataloader, num_samples=5):
-    """Визуализация предсказаний"""
-    model.eval()
-    images, labels = next(iter(dataloader))
-    with torch.no_grad():
-        outputs = model(images)
-        preds = torch.argmax(outputs, 1)
-
-    plt.figure(figsize=(10, 5))
-    for i in range(num_samples):
-        plt.subplot(1, num_samples, i + 1)
-        plt.imshow(images[i].permute(1, 2, 0))  # для изображений
-        plt.title(f'Pred: {preds[i]}, True: {labels[i]}')
-        plt.axis('off')
-    plt.savefig('predictions.png')
-
-
-# 2. Функции обучения и валидации
-def train_epoch(model, train_loader, criterion, optimizer, device, epoch, writer):
-    model.train()
-    running_loss = 0.0
-    correct = 0
-    total = 0
-    all_targets, all_predicted = [], []
-
-    for batch_idx, (data, targets) in enumerate(train_loader):
-        # Перемещаем данные на устройство
-        masks = data['mask'].to(device)
-        flows = data['optical_flow'].to(device)
-        points = data['skeleton_points'].to(device)
-        edges = data['edge_index'].to(device)
-        targets = targets.to(device)
-
-        # Обнуляем градиенты
-        optimizer.zero_grad()
-
-        # Forward pass
-        outputs = model(masks, flows, points, edges)
-        loss = criterion(outputs, targets)
-
-        # Backward pass и оптимизация
-        loss.backward()
-        optimizer.step()
-
-        # Считаем метрики
-        running_loss += loss.item()
-        _, predicted = outputs.max(1)
-        total += targets.size(0)
-        correct += predicted.eq(targets).sum().item()
-        all_targets.extend(targets.cpu().numpy())
-        all_predicted.extend(predicted.cpu().numpy())
-
-        # Логирование весов и градиентов
-        for name, param in model.named_parameters():
-            writer.add_histogram(f'Weights/{name}', param, epoch)
-            if param.grad is not None:
-                writer.add_histogram(f'Gradients/{name}', param.grad, epoch)
-
-        writer.close()
-
-        # Логируем каждые N батчей
-        if batch_idx % 50 == 0:
-            print(f'Train Epoch: {epoch} [{batch_idx * len(masks)}/{len(train_loader.dataset)} '
-                  f'({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {loss.item():.6f}')
-
-    # Считаем средние метрики за эпоху
-    train_loss = running_loss / len(train_loader)
-    train_acc = 100. * correct / total
-    train_prec = precision_score(y_true=all_targets, y_pred=all_predicted, average='macro')
-    train_rec = recall_score(y_true=all_targets, y_pred=all_predicted, average='macro')
-
-    # Логируем в TensorBoard
-    if writer:
-        writer.add_scalar('Loss/train', train_loss, epoch)
-        writer.add_scalar('Accuracy/train', train_acc, epoch)
-        writer.add_scalar('Precision/train', train_prec, epoch)
-        writer.add_scalar('Recall/train', train_rec, epoch)
-
-    return train_loss, train_acc
-
-
-def validate(model, val_loader, criterion, device, epoch, writer, class_names):
-    model.eval()
-    running_loss = 0.0
-    correct = 0
-    total = 0
-    all_targets = []
-    all_predicted = []
-
-    with torch.no_grad():
-        for data, targets in val_loader:
-            masks = data['mask'].to(device)
-            flows = data['optical_flow'].to(device)
-            points = data['skeleton_points'].to(device)
-            edges = data['edge_index'].to(device)
-            targets = targets.to(device)
-
-            outputs = model(masks, flows, points, edges)
-            loss = criterion(outputs, targets)
-
-            running_loss += loss.item()
-            _, predicted = outputs.max(1)
-            total += targets.size(0)
-            correct += predicted.eq(targets).sum().item()
-
-            all_targets.extend(targets.cpu().numpy())
-            all_predicted.extend(predicted.cpu().numpy())
-
-    val_loss = running_loss / len(val_loader)
-    val_acc = 100. * correct / total
-    val_prec = precision_score(y_true=all_targets, y_pred=all_predicted, average='macro')
-    val_rec = recall_score(y_true=all_targets, y_pred=all_predicted, average='macro')
-
-    # Логируем в TensorBoard
-    if writer:
-        writer.add_scalar('Loss/val', val_loss, epoch)
-        writer.add_scalar('Accuracy/val', val_acc, epoch)
-        writer.add_scalar('Precision/val', val_prec, epoch)
-        writer.add_scalar('Recall/val', val_rec, epoch)
-
-        # Confusion matrix
-        cm = confusion_matrix(all_targets, all_predicted)
-        fig = plot_confusion_matrix(cm, class_names)
-        writer.add_figure('Confusion Matrix', fig, epoch)
-
-    print(f'\nValidation set: Average loss: {val_loss:.4f}, Accuracy: {correct}/{total} ({val_acc:.2f}%)\n')
-
-    return val_loss, val_acc
-
-
-def plot_confusion_matrix(cm, classes):
-    """Создает визуализацию матрицы ошибок"""
-    fig, ax = plt.subplots(figsize=(12, 10))
-    im = ax.imshow(cm, interpolation='nearest')
-    ax.figure.colorbar(im, ax=ax)
-
-    ax.set(xticks=np.arange(cm.shape[1]),
-           yticks=np.arange(cm.shape[0]),
-           xticklabels=classes, yticklabels=classes,
-           title='Confusion matrix',
-           ylabel='True label',
-           xlabel='Predicted label')
-
-    # Поворачиваем подписи и выравниваем
-    plt.setp(ax.get_xticklabels(), rotation=45, ha="right",
-             rotation_mode="anchor")
-
-    # Добавляем числовые значения
-    thresh = cm.max() / 2.
-    for i in range(cm.shape[0]):
-        for j in range(cm.shape[1]):
-            ax.text(j, i, format(cm[i, j], 'd'),
-                    ha="center", va="center",
-                    color="white" if cm[i, j] > thresh else "black")
-
-    fig.tight_layout()
-    return fig
-
-
-# 3. Основной тренировочный цикл
-def train_model(config):
-    # Устройство
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
-    # Инициализация даталоадеров
-    train_loader, val_loader, class_names = get_dataloaders(
-        labels_path=config['labels_path'],
-        batch_size=config['batch_size'],
-        target_size=config['target_size'],
-        frame_step=config['frame_step']
-    )
-
-    # Модель
-    model = SuperFormer(num_classes=len(class_names)).to(device)
-
-    # Подсчет параметров
-    def count_parameters(model):
-        return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-    total_params = count_parameters(model)
-    print(f"Total trainable parameters: {total_params:,}")
-
-    # Критерий и оптимизатор
+    model = ST_GCN_Net(num_classes=5, adj_matrix=adj_matrix)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=config['lr'], weight_decay=config['weight_decay'])
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=3, factor=0.5)
+    time_experiment = time.time()
+    writer = SummaryWriter(
+        f'/Users/anastasiaspileva/PycharmProjects/ActionRecognition/interaction_analysis/action_recognizer/runs/{time_experiment}')
+    scheduler = ReduceLROnPlateau(optimizer, 'min', patience=3)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # TensorBoard writer
-    current_time = datetime.now().strftime('%b%d_%H-%M-%S')
-    log_dir = os.path.join(config['log_dir'], current_time)
-    writer = SummaryWriter(log_dir)
+    # Цикл обучения
+    best_val_loss = float('inf')
+    for epoch in range(60):
+        train_loss, train_prec = train_epoch(model=model, dataloader=train_loader,
+                                             optimizer=optimizer, writer=writer,
+                                             epoch=epoch, criterion=criterion, device=device)
 
-    # Сохранение лучшей модели
-    best_acc = 0.0
-    best_model_path = os.path.join(config['save_dir'], 'best_model.pth')
+        val_loss, val_prec = validate(model, val_loader, device, writer, epoch)
 
-    # Тренировочный цикл
-    for epoch in range(1, config['epochs'] + 1):
-        start_time = time.time()
+        scheduler.step(val_loss)
 
-        # Обучение и валидация
-        train_loss, train_acc = train_epoch(
-            model, train_loader, criterion, optimizer, device, epoch, writer)
-
-        val_loss, val_acc = validate(
-            model, val_loader, criterion, device, epoch, writer, class_names)
-
-        # Обновляем learning rate
-        scheduler.step(val_acc)
+        print(f'Epoch {epoch + 1}:')
+        print(f'Train Loss: {train_loss:.4f} | Precision: {train_prec:.2%}')
+        print(f'Val Loss: {val_loss:.4f} | Precision: {val_prec:.2%}')
 
         # Сохраняем лучшую модель
-        if val_acc > best_acc:
-            best_acc = val_acc
-            torch.save(model.state_dict(), best_model_path)
-            print(f"New best model saved with accuracy: {best_acc:.2f}%")
-
-        # Логируем время эпохи
-        epoch_time = time.time() - start_time
-        print(f'Epoch {epoch} completed in {epoch_time:.2f}s')
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), 'best_model.pth')
 
     # Закрываем writer
     writer.close()
-
-    # Загружаем лучшую модель для тестирования
-    model.load_state_dict(torch.load(best_model_path))
-    return model, best_acc
-
-
-# 4. Конфигурация и запуск обучения
-if __name__ == "__main__":
-    config = {
-        'labels_path': 'dataset/action_dataset/labels.csv',
-        'batch_size': 16,
-        'target_size': (128, 128),
-        'frame_step': 1,
-        'epochs': 50,
-        'lr': 1e-2,
-        'weight_decay': 1e-4,
-        'log_dir': 'runs',
-        'save_dir': 'saved_models'
-    }
-
-    # Создаем директории если их нет
-    os.makedirs(config['log_dir'], exist_ok=True)
-    os.makedirs(config['save_dir'], exist_ok=True)
-
-    # Запускаем обучение
-    trained_model, best_acc = train_model(config)
-    print(f"Training completed. Best validation accuracy: {best_acc:.2f}%")
